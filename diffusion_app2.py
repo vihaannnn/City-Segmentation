@@ -180,7 +180,7 @@ def diffuse_image(predicted_mask, pil_image, target_classes):
     )
 
     # Move the pipeline to the GPU if available; otherwise, it will run on the CPU.
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     pipe = pipe.to(device)
 
     # Define your text prompt
