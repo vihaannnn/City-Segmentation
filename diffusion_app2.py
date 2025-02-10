@@ -159,7 +159,7 @@ def combine_binary_masks(binary_masks):
         combined_mask = np.logical_or(combined_mask, mask_array > 0).astype(np.uint8) * 255
     
     # Convert back to PIL Image
-    return (Image.fromarray(combined_mask))[..., tf.newaxis], combined_mask
+    return Image.fromarray(combined_mask), combined_mask
 
 def diffuse_image(predicted_mask, pil_image, target_classes):
     segmentation_mask = mask_preprocesing(predicted_mask)
