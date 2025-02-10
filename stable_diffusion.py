@@ -159,7 +159,7 @@ def combine_binary_masks(binary_masks):
         combined_mask = np.logical_or(combined_mask, mask_array > 0).astype(np.uint8) * 255
     
     # Convert back to PIL Image
-    return (Image.fromarray(combined_mask))[..., tf.newaxis], combined_mask
+    return Image.fromarray(combined_mask), combined_mask
 
 def diffuse_image(predicted_mask, pil_image, target_classes):
     segmentation_mask = mask_preprocesing(predicted_mask)
@@ -168,11 +168,12 @@ def diffuse_image(predicted_mask, pil_image, target_classes):
         binary_mask = get_binary_mask(segmentation_mask, target_class)
         binary_masks.append(binary_mask)
     
-    combined_mask, combined_mask_numpy = combine_binary_masks(binary_masks)
+    # combined_mask, combined_mask_numpy = combine_binary_masks(binary_masks)
+    combined_mask = binary_mask
     st.image(combined_mask)
-    st.text("BINARY MASK")
-    str = combined_mask_numpy.shape
-    st.text(str)
+
+    # str = combined_mask_numpy.shape
+    # st.text(str)
     # Load the inpainting pipeline. Use fp16 for faster inference if a GPU is available.
     pipe = StableDiffusionInpaintPipeline.from_pretrained(
         "runwayml/stable-diffusion-inpainting",
@@ -187,7 +188,7 @@ def diffuse_image(predicted_mask, pil_image, target_classes):
     prompt = "decorated sky"
     # Run the inpainting process
     
-    
+    st.text()
     result = pipe(prompt=prompt, image=pil_image, mask_image=binary_mask).images[0]
     # Convert the PIL image 'result' to a TensorFlow tensor
     result_tensor = tf.keras.preprocessing.image.img_to_array(result)
@@ -307,6 +308,6 @@ if uploaded_file is not None:
 
 
     st.image(pil_image)
-    diffuse_image(predicted_mask=prediction, pil_image=pil_image , target_classes=[6,7])
+    diffuse_image(predicted_mask=prediction, pil_image=pil_image , target_classes=[7])
 
     print(prediction.shape)

@@ -159,7 +159,7 @@ def combine_binary_masks(binary_masks):
         combined_mask = np.logical_or(combined_mask, mask_array > 0).astype(np.uint8) * 255
     
     # Convert back to PIL Image
-    return (Image.fromarray(combined_mask))[..., tf.newaxis], combined_mask
+    return Image.fromarray(combined_mask), combined_mask
 
 def diffuse_image(predicted_mask, pil_image, target_classes):
     segmentation_mask = mask_preprocesing(predicted_mask)
@@ -186,8 +186,18 @@ def diffuse_image(predicted_mask, pil_image, target_classes):
     # Define your text prompt
     prompt = "decorated sky"
     # Run the inpainting process
+    st.text("FINALLL IMAGE AND MASK")
+    st.image(pil_image)
     
-    
+    st.text("shape of image ")
+    image_np = np.array(pil_image).shape
+    st.text(image_np)
+
+
+    st.image(combined_mask)
+    st.text("shape of mask ")
+    mask_np = np.array(combined_mask).shape
+    st.text(mask_np)
     result = pipe(prompt=prompt, image=pil_image, mask_image=binary_mask).images[0]
     # Convert the PIL image 'result' to a TensorFlow tensor
     result_tensor = tf.keras.preprocessing.image.img_to_array(result)
@@ -292,21 +302,71 @@ if uploaded_file is not None:
     # st.text(np.array(pil_image, dtype=np.float32).shape)
 
 
-    st.image(image)
-    input_image = tf.image.resize(image, (192, 256), method='nearest')
-    input_image = input_image / 255
-    sample_image = input_image
-    image_np = sample_image.numpy()
-    # Perform min-max normalization to scale pixel values to [0, 1]
-    normalized = (image_np - np.min(image_np)) / (np.max(image_np) - np.min(image_np))
-    # Scale normalized image to [0,255] and convert to uint8
-    image_8bit = (normalized * 255).astype(np.uint8)
-    pil_image = Image.fromarray(image_8bit)
+    # Create lists of file paths instead of single strings
+    import os
 
-    st.text(np.array(pil_image, dtype=np.float32).shape)
+    # Get all files in the directories
+    image_filenames = [os.path.join("./CameraRGB", f) for f in os.listdir("./CameraRGB") if f.endswith(('.png', '.jpg', '.jpeg'))]
+    masks_filenames = [os.path.join("./Masks", f) for f in os.listdir("./Masks") if f.endswith(('.png', '.jpg', '.jpeg'))]
+
+    # Sort to ensure matching pairs
+    image_filenames.sort()
+    masks_filenames.sort()
+
+    # Convert to tensor
+    image_filenames = tf.constant(image_filenames)
+    masks_filenames = tf.constant(masks_filenames)
+
+    # Create dataset
+    dataset = tf.data.Dataset.from_tensor_slices((image_filenames, masks_filenames))
+
+    for image, mask in dataset.take(2):
+        print(image)
+        print(mask)
+
+    multiplier = 2
+    def process_path(image_path, mask_path):
+        img = tf.io.read_file(image_path)
+        img = tf.image.decode_png(img, channels=3)
+        img = tf.image.convert_image_dtype(img, tf.float32)
+
+        mask = tf.io.read_file(mask_path)
+        mask = tf.image.decode_png(mask, channels=3)
+        mask = tf.math.reduce_max(mask, axis=-1, keepdims=True)
+        return img, mask
+
+    def preprocess(image, mask):
+        input_image = tf.image.resize(image, (96*multiplier, 128*multiplier), method='nearest')
+        input_mask = tf.image.resize(mask, (96*multiplier, 128*multiplier), method='nearest')
+
+        input_image = input_image / 255.
+
+        return input_image, input_mask
+
+    image_ds = dataset.map(process_path)
+    processed_image_ds = image_ds.map(preprocess)
 
 
-    st.image(pil_image)
+    for image, mask in processed_image_ds.take(1):
+        sample_image, sample_mask = image, mask
+        print(mask.shape)
+    
+
+    def get_pil_image_normalized(image_tensor):
+        """
+        Convert an image tensor to a PIL image by normalizing its pixel values to the full [0,255] range.
+        """
+        image_np = image_tensor.numpy()
+        # Perform min-max normalization to scale pixel values to [0, 1]
+        normalized = (image_np - np.min(image_np)) / (np.max(image_np) - np.min(image_np))
+        # Scale normalized image to [0,255] and convert to uint8
+        image_8bit = (normalized * 255).astype(np.uint8)
+        print(image_8bit.shape)
+        return Image.fromarray(image_8bit)
+
+    # Use the normalized function to get a PIL image
+    pil_image = get_pil_image_normalized(sample_image)
+    pil_image  # This should display the image with a stretched contrast.
     diffuse_image(predicted_mask=prediction, pil_image=pil_image , target_classes=[6,7])
 
     print(prediction.shape)
