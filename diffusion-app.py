@@ -3,20 +3,15 @@ import tensorflow as tf
 from PIL import Image
 import numpy as np
 import io
-from huggingface_hub import hf_hub_download
+
 
 # Set page title
 st.title("Interactive Class Removal Segmentation")
 
 # Load the model
 @st.cache_resource
-def load_model(repo_id = "vihaannnn/City_Segmentation_UNet", model_filename = "unet_model.h5"):
-    model_path = hf_hub_download(
-        repo_id=repo_id,
-        filename=model_filename,
-        revision="main"
-    )
-    return tf.keras.models.load_model(model_path)
+def load_model():
+    return tf.keras.models.load_model('./unet_model.h5')
 
 model = load_model()
 
@@ -51,7 +46,16 @@ def get_present_classes(prediction):
     return present_classes
 
 def remove_classes(image, prediction, classes_to_remove):
-    # Remove batch dimension
+    # First normalize and resize the input image to 192*256
+    normalized_image = image.astype(float) / 255.0  # Normalize to [0, 1]
+    resized_image = tf.image.resize(
+        tf.expand_dims(normalized_image, 0),
+        [192, 256],
+        method='bilinear'
+    )
+    resized_image = np.squeeze(resized_image)
+    
+    # Remove batch dimension from prediction
     prediction = np.squeeze(prediction)
     
     # Get class with highest probability for each pixel
@@ -62,22 +66,57 @@ def remove_classes(image, prediction, classes_to_remove):
     for class_idx in classes_to_remove:
         keep_mask = keep_mask & (class_mask != class_idx)
     
-    # Resize mask to match original image size
-    keep_mask = tf.image.resize(
-        tf.expand_dims(tf.expand_dims(keep_mask.astype(float), -1), 0),
-        image.shape[:2],
-        method='nearest'
-    )
+    # Convert mask to float and add necessary dimensions
+    keep_mask = tf.expand_dims(tf.expand_dims(keep_mask.astype(float), -1), 0)
     keep_mask = np.squeeze(keep_mask)
     
-    # Apply mask to original image
-    result = image.copy()
+    # Apply mask to resized image
+    result = resized_image.copy()
     # Create a boolean mask array matching the image dimensions
     mask_3d = np.stack([keep_mask] * 3, axis=-1)
     # Use boolean indexing to set pixels to white
-    result[mask_3d == 0] = 255
+    result[mask_3d == 0] = 1.0  # Set to 1.0 (white) in normalized space
     
-    return result
+    # Denormalize back to [0, 255] range
+    result = (result * 255.0).astype(np.uint8)
+    
+    return result, keep_mask
+
+def mask_preprocesing(predicted_mask):
+    # take the channel index with the highest value
+    reduced_channeled_predicted_mask = tf.argmax(predicted_mask, axis=-1)
+    
+
+    # have the channel dimension back, instead of being 23 (num of classes) but be 1
+    # Now, segmentation_mask is a tensor where each pixel value indicates the predicted class
+    # (an integer in the range 0–22).
+    final_pred_mask = reduced_channeled_predicted_mask[..., tf.newaxis]
+
+    # Convert the TensorFlow tensor to a NumPy array and remove the channel dimension
+    seg_mask_np = final_pred_mask.numpy().squeeze()
+
+    return seg_mask_np
+    
+
+def get_binary_mask(segmentation_mask, target_class):
+    """
+    Convert a multi-class segmentation mask to a binary mask for a specific target class.
+    Pixels with the target_class are set to 255 (white) and all others to 0 (black).
+    """
+    # Convert the TensorFlow tensor to a NumPy array and remove the channel dimension
+    seg_mask_np = segmentation_mask.numpy().squeeze()  # Shape becomes (H, W)
+    # Create binary mask: True where the pixel equals target_class, then convert to 255/0
+    binary_mask = (seg_mask_np == target_class).astype(np.uint8) * 255
+    # Convert the NumPy array to a PIL image (the inpainting pipeline expects a PIL image)
+    return Image.fromarray(binary_mask)
+
+def diffuse_image(predicted_mask, target_classes):
+    segmentation_mask = mask_preprocesing(predicted_mask)
+    binary_masks = []
+    for target_class in target_classes:
+        binary_mask = get_binary_mask(segmentation_mask, target_class)
+        binary_masks.append(binary_mask)
+    
 
 # File uploader
 uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
@@ -103,7 +142,6 @@ if uploaded_file is not None:
     # Process image to get present classes
     processed_img, original_size = preprocess_image(image)
     prediction = model.predict(processed_img)
-    st.text(prediction.shape)
     present_classes = get_present_classes(prediction)
     
     # Show checkboxes only for present classes
@@ -131,7 +169,8 @@ if uploaded_file is not None:
         with st.spinner("Processing image..."):
             try:
                 # Remove selected classes
-                result_image = remove_classes(image_array, prediction, classes_to_remove)
+                result_image, keep_mask = remove_classes(image_array, prediction, classes_to_remove)
+                st.text(keep_mask.shape)
                 
                 # Display result
                 with col2:
