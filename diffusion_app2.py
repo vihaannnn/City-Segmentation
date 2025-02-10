@@ -3,17 +3,38 @@ import tensorflow as tf
 from PIL import Image
 import numpy as np
 import io
-
+from huggingface_hub import hf_hub_download
+import torch
+from diffusers import StableDiffusionInpaintPipeline
+import os
 
 # Set page title
 st.title("Interactive Class Removal Segmentation")
+# Set torch path explicitly
+torch.classes.__path__ = [os.path.join(torch.__path__[0], 'classes')]
 
 # Load the model
 @st.cache_resource
-def load_model():
-    return tf.keras.models.load_model('./unet_model.h5')
+def load_model(repo_id = "vihaannnn/City_Segmentation_UNet", model_filename = "unet_model.h5"):
+    model_path = hf_hub_download(
+        repo_id=repo_id,
+        filename=model_filename,
+        revision="main"
+    )
+    return tf.keras.models.load_model(model_path)
 
 model = load_model()
+
+# def get_pil_image_normalized(image_tensor):
+#     """
+#     Convert an image tensor to a PIL image by normalizing its pixel values to the full [0,255] range.
+#     """
+#     image_np = image_tensor.numpy()
+#     # Perform min-max normalization to scale pixel values to [0, 1]
+#     normalized = (image_np - np.min(image_np)) / (np.max(image_np) - np.min(image_np))
+#     # Scale normalized image to [0,255] and convert to uint8
+#     image_8bit = (normalized * 255).astype(np.uint8)
+#     return Image.fromarray(image_8bit)
 
 def preprocess_image(image):
     # Convert PIL image to numpy array
@@ -30,6 +51,7 @@ def preprocess_image(image):
     
     # Add batch dimension
     img_tensor = tf.expand_dims(img_tensor, 0)
+    
     
     return img_tensor, img_array.shape[:2]
 
@@ -104,7 +126,7 @@ def get_binary_mask(segmentation_mask, target_class):
     Pixels with the target_class are set to 255 (white) and all others to 0 (black).
     """
     # Convert the TensorFlow tensor to a NumPy array and remove the channel dimension
-    seg_mask_np = segmentation_mask.numpy().squeeze()  # Shape becomes (H, W)
+    seg_mask_np = segmentation_mask.squeeze()  # Shape becomes (H, W)
     # Create binary mask: True where the pixel equals target_class, then convert to 255/0
     binary_mask = (seg_mask_np == target_class).astype(np.uint8) * 255
     # Convert the NumPy array to a PIL image (the inpainting pipeline expects a PIL image)
@@ -137,19 +159,50 @@ def combine_binary_masks(binary_masks):
         combined_mask = np.logical_or(combined_mask, mask_array > 0).astype(np.uint8) * 255
     
     # Convert back to PIL Image
-    return Image.fromarray(combined_mask)
+    return Image.fromarray(combined_mask), combined_mask
 
-def diffuse_image(predicted_mask, target_classes):
+def diffuse_image(predicted_mask, pil_image, target_classes):
     segmentation_mask = mask_preprocesing(predicted_mask)
     binary_masks = []
     for target_class in target_classes:
         binary_mask = get_binary_mask(segmentation_mask, target_class)
         binary_masks.append(binary_mask)
     
-    combined_mask = combine_binary_masks(binary_masks)
-    str = "MASK FINAL SHAPE : " + combined_mask.shape
+    combined_mask, combined_mask_numpy = combine_binary_masks(binary_masks)
+    st.image(combined_mask)
+
+    str = combined_mask_numpy.shape
     st.text(str)
+    # Load the inpainting pipeline. Use fp16 for faster inference if a GPU is available.
+    pipe = StableDiffusionInpaintPipeline.from_pretrained(
+        "runwayml/stable-diffusion-inpainting",
+        torch_dtype=torch.float16
+    )
+
+    # Move the pipeline to the GPU if available; otherwise, it will run on the CPU.
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    pipe = pipe.to(device)
+
+    # Define your text prompt
+    prompt = "decorated sky"
+    # Run the inpainting process
     
+    
+    result = pipe(prompt=prompt, image=pil_image, mask_image=binary_mask).images[0]
+    # Convert the PIL image 'result' to a TensorFlow tensor
+    result_tensor = tf.keras.preprocessing.image.img_to_array(result)
+    # Resize using TensorFlow (note: the size argument is in (height, width))
+    result_tensor_resized = tf.image.resize(result_tensor, [192, 256])
+    print(result_tensor_resized.shape)
+    # Convert tensorflow tensor back to a PIL image
+    diffused_image = tf.keras.preprocessing.image.array_to_img(result_tensor_resized)
+    # Now call the function with your four images:
+    # pil_image: your original input image (tensor or PIL image)
+    # final_pred_mask: your predicted segmentation mask (tensor or NumPy array, shape (H, W, C))
+    # binary_mask: your binary mask for the selected object (already a PIL image)
+    # result: your diffused (inpainted) image (tensor, NumPy array, or PIL image)
+    st.text("Diffused Image")
+    st.image(diffused_image)
 
 # File uploader
 uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
@@ -225,5 +278,11 @@ if uploaded_file is not None:
                 
             except Exception as e:
                 st.error(f"Error during processing: {str(e)}")
+
+
+    # Resize to specific dimensions
+    pil_image = image.resize((192, 256))
+    st.text(pil_image.shape)
+    # diffuse_image(predicted_mask=prediction, pil_image=pil_image , target_classes=[6,7])
 
     print(prediction.shape)
