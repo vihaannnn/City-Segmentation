@@ -200,8 +200,6 @@ def mask_to_label_array(mask_image): #2
 def eval_on_dataset():
     """example of the above code used to evaluate the segmentation technique on the dataset
     """
-    IoUs = []
-    CAs = []
     OAs = []
 
     image_list, mask_list = load_lists()
@@ -218,14 +216,10 @@ def eval_on_dataset():
 
         # Evaluate segmentation
         metrics = evaluate_segmentation(seg_im, true_mask, num_classes=len(np.unique(true_mask)))
-        IoUs.append(np.mean(metrics['IoU']))
-        CAs.append(np.mean(metrics['Class Accuracy']))
-        OAs.append(metrics['Overall Accuracy'])
+        
+        OAs.append(metrics['Overall Accuracy']) # Can be adapted to make use of other metrics produced.
 
-    CA = np.mean(CAs)
     OA = np.mean(OAs)
-    IoU = np.mean(IoUs)
-
-    print("Mean Class Accuracy:", CA)
+    
     print("Mean Overall Accuracy:", OA)
-    print("Mean IoU:", IoU)
+    
