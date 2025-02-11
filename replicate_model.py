@@ -7,6 +7,23 @@ from huggingface_hub import hf_hub_download
 import torch
 from diffusers import StableDiffusionInpaintPipeline
 import os
+import replicate 
+import base64
+from io import BytesIO
+import tempfile
+import os
+import streamlit as st
+import replicate
+from PIL import Image
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+import threading
+import tempfile
+import os
+import uuid
+from pathlib import Path
+import requests
+import time
+
 # Set page title
 st.title("Interactive Class Removal Segmentation")
 # Set torch path explicitly
@@ -160,7 +177,91 @@ def combine_binary_masks(binary_masks):
     # Convert back to PIL Image
     return Image.fromarray(combined_mask), combined_mask
 
-def diffuse_image(predicted_mask, pil_image, target_classes):
+# You'll need to get this from imgbb.com
+IMGBB_API_KEY = "74ec985e30e271edd928c963b003947a"  # Replace with your API key
+
+def upload_to_imgbb(pil_image):
+    """Upload PIL image to imgbb and get public URL"""
+    # Convert PIL image to base64
+    buffered = BytesIO()
+    pil_image.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode()
+    
+    # Upload to imgbb
+    url = "https://api.imgbb.com/1/upload"
+    payload = {
+        "key": IMGBB_API_KEY,
+        "image": img_str,
+    }
+    
+    response = requests.post(url, data=payload)
+    
+    if response.status_code != 200:
+        raise Exception(f"Failed to upload image: {response.text}")
+    
+    return response.json()["data"]["url"]
+
+
+def run_replicate_inpainting(input_image, mask_image, prompt, num_inference_steps=25):
+    """Run replicate inpainting with PIL images"""
+    try:
+        # Show progress
+        progress_text = "Operation in progress. Please wait..."
+        progress_bar = st.progress(0)
+        
+        # Upload images
+        st.text("Uploading input image...")
+        input_url = upload_to_imgbb(input_image)
+        progress_bar.progress(25)
+        
+        st.text("Uploading mask image...")
+        mask_url = upload_to_imgbb(mask_image)
+        progress_bar.progress(50)
+        
+        st.text("Processing with Replicate API...")
+        
+        # Create input dictionary for replicate
+        input_data = {
+            "image": input_url,
+            "mask": mask_url,
+            "prompt": prompt,
+            "num_inference_steps": num_inference_steps
+        }
+        
+        # Run the model with timeout handling
+        start_time = time.time()
+        timeout = 300  # 5 minutes timeout
+        
+        output = replicate.run(
+            "stability-ai/stable-diffusion-inpainting:95b7223104132402a9ae91cc677285bc5eb997834bd2349fa486f53910fd68b3",
+            input=input_data
+        )
+        
+        progress_bar.progress(75)
+        
+        # Process and save outputs
+        st.text("Saving results...")
+        results = []
+        for index, item in enumerate(output):
+            output_path = f"output_{index}.png"
+            with open(output_path, "wb") as file:
+                file.write(item.read())
+            results.append(output_path)
+        
+        progress_bar.progress(100)
+        st.success("Processing complete!")
+        
+        return results
+    
+    except Exception as e:
+        st.error(f"An error occurred: {str(e)}")
+        raise
+    finally:
+        if 'progress_bar' in locals():
+            progress_bar.empty()
+
+
+def diffuse_image(predicted_mask, pil_image, prompt, target_classes):
     segmentation_mask = mask_preprocesing(predicted_mask)
     binary_masks = []
     for target_class in target_classes:
@@ -173,33 +274,9 @@ def diffuse_image(predicted_mask, pil_image, target_classes):
     str = combined_mask_numpy.shape
     st.text(str)
     # Load the inpainting pipeline. Use fp16 for faster inference if a GPU is available.
-    pipe = StableDiffusionInpaintPipeline.from_pretrained(
-        "runwayml/stable-diffusion-inpainting",
-        torch_dtype=torch.float16
-    )
-
-    # Move the pipeline to the GPU if available; otherwise, it will run on the CPU.
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    pipe = pipe.to(device)
-
-    # Define your text prompt
-    prompt = "decorated sky"
-    # Run the inpainting process
     
-    
-    result = pipe(prompt=prompt, image=pil_image, mask_image=binary_mask).images[0]
-    # Convert the PIL image 'result' to a TensorFlow tensor
-    result_tensor = tf.keras.preprocessing.image.img_to_array(result)
-    # Resize using TensorFlow (note: the size argument is in (height, width))
-    result_tensor_resized = tf.image.resize(result_tensor, [192, 256])
-    print(result_tensor_resized.shape)
-    # Convert tensorflow tensor back to a PIL image
-    diffused_image = tf.keras.preprocessing.image.array_to_img(result_tensor_resized)
-    # Now call the function with your four images:
-    # pil_image: your original input image (tensor or PIL image)
-    # final_pred_mask: your predicted segmentation mask (tensor or NumPy array, shape (H, W, C))
-    # binary_mask: your binary mask for the selected object (already a PIL image)
-    # result: your diffused (inpainted) image (tensor, NumPy array, or PIL image)
+    diffused_image = run_replicate_inpainting(input_image=pil_image, mask_image=combined_mask, prompt=prompt)
+
     st.text("Diffused Image")
     st.image(diffused_image)
 
@@ -289,23 +366,24 @@ if uploaded_file is not None:
 
 
     # st.text(np.array(pil_image, dtype=np.float32).shape)
+    prompt = st.text_input("Enter a prompt for image diffusion", "A Decorated Sky")
+    if st.button("Apply Diffusion"):
+        with st.spinner("Applying diffusion..."):
+            st.image(image)
+            input_image = tf.image.resize(image, (192, 256), method='nearest')
+            input_image = input_image / 255
+            sample_image = input_image
+            image_np = sample_image.numpy()
+            # Perform min-max normalization to scale pixel values to [0, 1]
+            normalized = (image_np - np.min(image_np)) / (np.max(image_np) - np.min(image_np))
+            # Scale normalized image to [0,255] and convert to uint8
+            image_8bit = (normalized * 255).astype(np.uint8)
+            pil_image = Image.fromarray(image_8bit)
+
+            st.text(np.array(pil_image, dtype=np.float32).shape)
 
 
-    st.image(image)
-    input_image = tf.image.resize(image, (192, 256), method='nearest')
-    input_image = input_image / 255
-    sample_image = input_image
-    image_np = sample_image.numpy()
-    # Perform min-max normalization to scale pixel values to [0, 1]
-    normalized = (image_np - np.min(image_np)) / (np.max(image_np) - np.min(image_np))
-    # Scale normalized image to [0,255] and convert to uint8
-    image_8bit = (normalized * 255).astype(np.uint8)
-    pil_image = Image.fromarray(image_8bit)
-
-    st.text(np.array(pil_image, dtype=np.float32).shape)
-
-
-    st.image(pil_image)
-    diffuse_image(predicted_mask=prediction, pil_image=pil_image , target_classes=[6,7])
+            st.image(pil_image)
+            diffuse_image(predicted_mask=prediction, pil_image=pil_image , prompt=prompt, target_classes=classes_to_remove)
 
     print(prediction.shape)
